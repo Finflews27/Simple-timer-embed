@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Timer</title>
+<style>
+  :root {
+    --bg: #15181d;
+    --panel: #1c2027;
+    --ink: #eef1f4;
+    --muted: #8b93a1;
+    --line: #2a2f37;
+    --accent: #5fb0c4;   /* calm teal */
+    --warn: #e0955c;      /* warms as time runs low */
+    --alarm: #e2685f;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    height: 100%;
+    min-height: 300px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    padding: 24px 16px;
+  }
+
+  /* ---- ring + time ---- */
+  .dial {
+    position: relative;
+    width: 208px;
+    height: 208px;
+  }
+  .dial svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .track { fill: none; stroke: var(--line); stroke-width: 6; }
+  .prog {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 6;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.25s linear, stroke 0.4s ease;
+  }
+
+  .time {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+  }
+  .digits {
+    font-size: 46px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    user-select: none;
+  }
+  .status {
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--muted);
+    min-height: 14px;
+  }
+
+  /* ---- adjust + controls ---- */
+  .controls { display: flex; align-items: center; gap: 10px; }
+
+  button {
+    font-family: inherit;
+    cursor: pointer;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--ink);
+    border-radius: 10px;
+    transition: background 0.15s, border-color 0.15s, opacity 0.15s, transform 0.05s;
+  }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  .step {
+    width: 38px; height: 38px;
+    font-size: 20px; line-height: 1;
+    color: var(--muted);
+  }
+  .step:hover:not(:disabled) { color: var(--ink); border-color: var(--accent); }
+
+  .primary {
+    padding: 10px 26px;
+    font-size: 15px;
+    font-weight: 600;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #0c1418;
+    min-width: 104px;
+  }
+  .primary:hover { background: #6fc0d4; }
+
+  .ghost {
+    padding: 10px 18px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .ghost:hover:not(:disabled) { color: var(--ink); border-color: var(--accent); }
+
+  /* ---- done flash ---- */
+  .wrap.done .prog { stroke: var(--alarm); }
+  .wrap.done .digits, .wrap.done .status { color: var(--alarm); }
+  @keyframes flash { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+  .wrap.done .time { animation: flash 0.8s ease-in-out 4; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .prog { transition: none; }
+    .wrap.done .time { animation: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap" id="wrap">
+    <div class="dial">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <circle class="track" cx="50" cy="50" r="45"></circle>
+        <circle class="prog" id="prog" cx="50" cy="50" r="45"></circle>
+      </svg>
+      <div class="time">
+        <div class="digits" id="digits">25:00</div>
+        <div class="status" id="status">Ready</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="step" id="minus" title="Minus one minute">&minus;</button>
+      <button class="primary" id="toggle">Start</button>
+      <button class="step" id="plus" title="Plus one minute">+</button>
+      <button class="ghost" id="reset">Reset</button>
+    </div>
+  </div>
+
+<script>
+(function () {
+  var CIRC = 2 * Math.PI * 45;
+  var prog = document.getElementById('prog');
+  prog.style.strokeDasharray = CIRC;
+
+  var wrap    = document.getElementById('wrap');
+  var digits  = document.getElementById('digits');
+  var status  = document.getElementById('status');
+  var toggle  = document.getElementById('toggle');
+  var resetBtn= document.getElementById('reset');
+  var minusBtn= document.getElementById('minus');
+  var plusBtn = document.getElementById('plus');
+
+  var total   = 25 * 60;   // configured length, seconds
+  var left    = total;     // remaining, seconds
+  var running = false;
+  var ticker  = null;
+  var endAt   = 0;         // wall-clock target, ms
+  var audioCtx= null;
+
+  function fmt(s) {
+    s = Math.max(0, Math.round(s));
+    var h = Math.floor(s / 3600);
+    var m = Math.floor((s % 3600) / 60);
+    var sec = s % 60;
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    return h > 0 ? h + ':' + pad(m) + ':' + pad(sec) : pad(m) + ':' + pad(sec);
+  }
+
+  function render() {
+    digits.textContent = fmt(left);
+    var frac = total > 0 ? left / total : 0;
+    prog.style.strokeDashoffset = CIRC * (1 - frac);
+    // colour warms in the final stretch (function, not decoration)
+    var css = getComputedStyle(document.documentElement);
+    if (running && (left <= 30 || frac <= 0.1)) {
+      prog.style.stroke = css.getPropertyValue('--warn').trim();
+    } else if (!wrap.classList.contains('done')) {
+      prog.style.stroke = css.getPropertyValue('--accent').trim();
+    }
+  }
+
+  function setTotal(seconds) {
+    total = Math.max(1, seconds);
+    left = total;
+    stop(false);
+    wrap.classList.remove('done');
+    status.textContent = 'Ready';
+    render();
+  }
+
+  function beep() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      var t = audioCtx.currentTime;
+      [0, 0.28, 0.56].forEach(function (offset) {
+        var osc = audioCtx.createOscillator();
+        var gain = audioCtx.createGain();
+        osc.frequency.value = 880;
+        osc.type = 'sine';
+        gain.gain.setValueAtTime(0.0001, t + offset);
+        gain.gain.exponentialRampToValueAtTime(0.25, t + offset + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + offset + 0.22);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(t + offset);
+        osc.stop(t + offset + 0.24);
+      });
+    } catch (e) { /* audio may be blocked in some frames; ignore */ }
+  }
+
+  function tick() {
+    left = (endAt - Date.now()) / 1000;
+    if (left <= 0) {
+      left = 0;
+      finish();
+      return;
+    }
+    render();
+  }
+
+  function start() {
+    if (running || left <= 0) return;
+    running = true;
+    wrap.classList.remove('done');
+    endAt = Date.now() + left * 1000;
+    ticker = setInterval(tick, 200);
+    toggle.textContent = 'Pause';
+    status.textContent = 'Running';
+    setAdjustEnabled(false);
+    render();
+  }
+
+  function stop(keepStatus) {
+    running = false;
+    if (ticker) { clearInterval(ticker); ticker = null; }
+    toggle.textContent = 'Start';
+    if (!keepStatus) status.textContent = left < total ? 'Paused' : 'Ready';
+    setAdjustEnabled(true);
+    render();
+  }
+
+  function finish() {
+    running = false;
+    if (ticker) { clearInterval(ticker); ticker = null; }
+    toggle.textContent = 'Start';
+    status.textContent = 'Done';
+    wrap.classList.add('done');
+    setAdjustEnabled(true);
+    render();
+    beep();
+  }
+
+  function setAdjustEnabled(on) {
+    minusBtn.disabled = !on;
+    plusBtn.disabled = !on;
+  }
+
+  // ---- events ----
+  toggle.addEventListener('click', function () {
+    if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+    running ? stop(false) : start();
+  });
+
+  resetBtn.addEventListener('click', function () {
+    stop(true);
+    left = total;
+    wrap.classList.remove('done');
+    status.textContent = 'Ready';
+    render();
+  });
+
+  minusBtn.addEventListener('click', function () {
+    setTotal(total - 60);
+  });
+  plusBtn.addEventListener('click', function () {
+    setTotal(total + 60);
+  });
+
+  document.addEventListener('keydown', function (e) {
+    var tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea') return;
+    if (e.code === 'Space') { e.preventDefault(); toggle.click(); }
+    else if (e.key === 'r' || e.key === 'R') { resetBtn.click(); }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
